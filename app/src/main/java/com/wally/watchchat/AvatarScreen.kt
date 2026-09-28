@@ -13,6 +13,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -83,6 +84,12 @@ fun AvatarScreen(vm: ChatViewModel) {
     val context = LocalContext.current
     val typing by vm.typing.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
+
+    val activity = LocalContext.current as? Activity
+    DisposableEffect(activity) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { }
+    }
 
     var showProcess by remember { mutableStateOf(false) }
     var agentStage by remember { mutableStateOf<AgentStatus?>(null) }

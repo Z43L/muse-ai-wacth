@@ -76,7 +76,7 @@ class GestureService : Service(), SensorEventListener {
         runCatching {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WallyWatch::GestureWakeLock").apply {
-                acquire(10 * 60 * 1000L) // 10 minutos renovables
+                acquire() // Mantiene la CPU despierta de forma permanente
             }
         }.onFailure { e ->
             Log.w("WallyGesture", "Error al adquirir WakeLock", e)
