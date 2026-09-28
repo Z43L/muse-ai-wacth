@@ -3,6 +3,7 @@ package com.wally.watchchat
 import android.app.Activity
 import android.app.RemoteInput
 import android.media.MediaPlayer
+import android.os.SystemClock
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.util.Log
@@ -26,19 +27,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.focusable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.foundation.onRotaryScrollEvent
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import androidx.wear.input.RemoteInputIntentHelper
@@ -80,6 +79,10 @@ fun AvatarScreen(vm: ChatViewModel) {
 
     var showProcess by remember { mutableStateOf(false) }
     var agentStage by remember { mutableStateOf<AgentStatus?>(null) }
+    // Acumuladores para que el panel solo se abra/cierre con gestos
+    // deliberados (no con roces accidentales de la corona o el dedo).
+    var crownDownAcc by remember { mutableStateOf(0f) }
+    var crownUpAcc by remember { mutableStateOf(0f) }
 
     // Síntesis de voz del reloj: solo como reserva si la respuesta
     // no trae audio locutado por Wally.
@@ -166,6 +169,8 @@ fun AvatarScreen(vm: ChatViewModel) {
     var wasTyping by remember { mutableStateOf(false) }
     LaunchedEffect(typing) {
         if (wasTyping && !typing) {
+            // Al llegar la respuesta se cierra el panel para ver al avatar.
+            showProcess = false
             messages.lastOrNull { !it.isUser }?.let { speakReply(it) }
         }
         wasTyping = typing
@@ -203,36 +208,69 @@ fun AvatarScreen(vm: ChatViewModel) {
         else -> "Toca dos veces para hablar"
     }
 
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
-
     Box(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .focusRequester(focusRequester)
-            .focusable()
-            // Doble toque: empezar a hablar.
+            // Doble toque para hablar, con ventana generosa (650 ms, 120 px)
+            // porque en la pantalla pequeña del reloj el doble toque del
+            // sistema es demasiado estricto con el pulgar.
             .pointerInput(Unit) {
+                var lastTapAt = 0L
+                var lastTapPos = Offset.Zero
                 detectTapGestures(
-                    onDoubleTap = { if (!typing && !showProcess) launchVoiceInput() }
+                    onTap = { pos ->
+                        val now = SystemClock.uptimeMillis()
+                        val dt = now - lastTapAt
+                        val dist = (pos - lastTapPos).getDistance()
+                        if (dt < 650 && dist < 120f) {
+                            lastTapAt = 0L
+                            if (!typing && !showProcess) launchVoiceInput()
+                        } else {
+                            lastTapAt = now
+                            lastTapPos = pos
+                        }
+                    }
                 )
             }
-            // Deslizar hacia abajo (o corona hacia abajo): ver la actividad.
+            // Deslizar hacia abajo: abre el panel solo con un gesto largo
+            // y deliberado (más de 220 px acumulados).
             .pointerInput(Unit) {
-                detectVerticalDragGestures { _, dragAmount ->
-                    if (dragAmount > 80) showProcess = true
-                }
+                var acc = 0f
+                detectVerticalDragGestures(
+                    onDragEnd = { acc = 0f },
+                    onDragCancel = { acc = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        acc += dragAmount
+                        if (acc > 220 && !showProcess) {
+                            showProcess = true
+                            acc = 0f
+                        }
+                    }
+                )
             }
+            // Corona: también exige un giro largo y deliberado para abrir
+            // (o cerrar, girando hacia arriba con el panel abierto).
             .onRotaryScrollEvent {
-                if (it.verticalScrollPixels > 0f) {
-                    showProcess = true
-                    true
-                } else {
-                    false
+                val d = it.verticalScrollPixels
+                if (d > 0f) {
+                    crownUpAcc = 0f
+                    crownDownAcc += d
+                    if (crownDownAcc > 500 && !showProcess) {
+                        showProcess = true
+                        crownDownAcc = 0f
+                    }
+                } else if (d < 0f) {
+                    crownDownAcc = 0f
+                    if (showProcess) {
+                        crownUpAcc -= d
+                        if (crownUpAcc > 500) {
+                            showProcess = false
+                            crownUpAcc = 0f
+                        }
+                    }
                 }
+                true
             }
     ) {
         WallyAvatar(busy = typing, fullscreen = true)
@@ -279,9 +317,18 @@ private fun ProcessPanel(
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.92f))
             .pointerInput(Unit) {
-                detectVerticalDragGestures { _, dragAmount ->
-                    if (dragAmount < -80) onClose()
-                }
+                var acc = 0f
+                detectVerticalDragGestures(
+                    onDragEnd = { acc = 0f },
+                    onDragCancel = { acc = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        acc += dragAmount
+                        if (acc < -150) {
+                            onClose()
+                            acc = 0f
+                        }
+                    }
+                )
             }
     ) {
         Column(
@@ -306,7 +353,7 @@ private fun ProcessPanel(
                     color = Color.White,
                     modifier = Modifier
                         .clickable { onClose() }
-                        .padding(8.dp)
+                        .padding(16.dp)
                 )
             }
 

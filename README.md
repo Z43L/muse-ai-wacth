@@ -122,11 +122,14 @@ object MailboxConfig {
   (entrada por voz con `RemoteInput`); mientras esperas respuesta se reproduce
   la animación de "trabajando" y el texto inferior muestra en vivo en qué
   está el agente (💭 pensando, 🎙️ generando audio, 📤 publicando…).
-- **Panel de actividad**: desliza el dedo hacia abajo sobre la pantalla (o
-  gira la corona hacia abajo) para ver lo que está haciendo el agente en
-  este momento + tu último intercambio. Se cierra deslizando hacia arriba
-  o tocando ✕. La etapa se lee de `status.json` del buzón (la publica el
-  agente en cada fase: `pensando` → `locutando` → `publicando` → `listo`).
+- **Panel de actividad**: desliza el dedo hacia abajo con un gesto largo
+  (o gira la corona hacia abajo de forma deliberada) para ver lo que está
+  haciendo el agente en este momento + tu último intercambio. Se cierra
+  deslizando hacia arriba, girando la corona hacia arriba o tocando ✕
+  (y se cierra solo al llegar la respuesta). Los umbrales son altos a
+  propósito para que no se abra con roces accidentales. La etapa se lee
+  de `status.json` del buzón (la publica el agente en cada fase:
+  `pensando` → `locutando` → `publicando` → `listo`).
 - `MailboxBridge`: envía tu mensaje a `inbox.json` y hace polling a
   `outbox.json` cada 3 segundos hasta que llega la respuesta dirigida a tu
   mensaje (`reply_to == id`). Si la respuesta trae `audio`, descarga el mp3

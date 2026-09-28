@@ -18,5 +18,5 @@ package com.wally.watchchat
 object MailboxConfig {
     const val API = "https://api.github.com"
     const val REPO = "Z43L/wally-watch-mailbox"
-    const val TOKEN = "pon token aqui"
+    const val TOKEN = "pon tu  token"
 }
