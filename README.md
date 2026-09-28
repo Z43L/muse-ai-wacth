@@ -118,9 +118,15 @@ object MailboxConfig {
 ### Cómo funciona la app por dentro
 
 - `MainActivity` → `AvatarScreen`: el avatar 3D animado (`WallyAvatar.kt`,
-  vídeos en `res/raw/`) ocupa toda la pantalla. Tocas la pantalla y hablas
+  vídeos en `res/raw/`) ocupa toda la pantalla. **Doble toque** para hablar
   (entrada por voz con `RemoteInput`); mientras esperas respuesta se reproduce
-  la animación de "trabajando".
+  la animación de "trabajando" y el texto inferior muestra en vivo en qué
+  está el agente (💭 pensando, 🎙️ generando audio, 📤 publicando…).
+- **Panel de actividad**: desliza el dedo hacia abajo sobre la pantalla (o
+  gira la corona hacia abajo) para ver lo que está haciendo el agente en
+  este momento + tu último intercambio. Se cierra deslizando hacia arriba
+  o tocando ✕. La etapa se lee de `status.json` del buzón (la publica el
+  agente en cada fase: `pensando` → `locutando` → `publicando` → `listo`).
 - `MailboxBridge`: envía tu mensaje a `inbox.json` y hace polling a
   `outbox.json` cada 3 segundos hasta que llega la respuesta dirigida a tu
   mensaje (`reply_to == id`). Si la respuesta trae `audio`, descarga el mp3

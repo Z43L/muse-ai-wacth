@@ -28,6 +28,10 @@ import java.util.concurrent.TimeUnit
  * Necesita un token en [MailboxConfig] (fine-grained PAT con permiso
  * Contents: lectura y escritura, SOLO en el repo del buzón).
  */
+
+/** Etapa de trabajo del agente, publicada por el cron en status.json. */
+data class AgentStatus(val stage: String, val detail: String, val ts: Long)
+
 class MailboxBridge(private val cacheDir: File) : AssistantBridge {
 
     private val client = OkHttpClient.Builder()
@@ -91,6 +95,24 @@ class MailboxBridge(private val cacheDir: File) : AssistantBridge {
                     (if (lastError != null) " Último error: $lastError" else "")
             )
         }
+
+    /**
+     * Lee la etapa actual del agente (status.json, escrito por el cron).
+     * Devuelve null si no hay estado o no se pudo leer.
+     */
+    suspend fun getAgentStatus(): AgentStatus? = withContext(Dispatchers.IO) {
+        try {
+            val json = getJson("status.json") ?: return@withContext null
+            AgentStatus(
+                json.optString("stage", ""),
+                json.optString("detail", ""),
+                json.optLong("ts", 0)
+            )
+        } catch (e: Exception) {
+            Log.w("WallyWatch", "getAgentStatus: no se pudo leer", e)
+            null
+        }
+    }
 
     /**
      * Descarga el mp3 de la respuesta (campo "audio" del outbox, p. ej.

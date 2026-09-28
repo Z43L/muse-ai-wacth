@@ -29,7 +29,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val typing: StateFlow<Boolean> = _typing.asStateFlow()
 
     init {
-        addMessage("Hola, soy Wally (prototipo). Pulsa el botón y háblame.", isUser = false)
+        addMessage("Hola, soy Wally. Tócame dos veces y háblame.", isUser = false)
         send("Hola Wally desde el reloj")
     }
 
@@ -62,4 +62,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun addMessage(text: String, isUser: Boolean, audioFile: java.io.File? = null) {
         _messages.update { it + ChatMessage(idGen.incrementAndGet(), text, isUser, audioFile = audioFile) }
     }
+
+    /** Etapa actual del agente (la publica el cron en status.json); null si no hay. */
+    suspend fun agentStatus(): AgentStatus? =
+        (bridge as? MailboxBridge)?.getAgentStatus()
 }
