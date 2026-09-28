@@ -1,0 +1,13 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Kotlin
+.kotlin/
