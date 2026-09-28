@@ -1,12 +1,19 @@
 package com.wally.watchchat
 
+import android.Manifest
 import android.app.Activity
 import android.app.RemoteInput
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaPlayer
+import android.os.Bundle
 import android.os.SystemClock
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -37,7 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.wear.compose.foundation.onRotaryScrollEvent
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import androidx.wear.input.RemoteInputIntentHelper
@@ -134,15 +141,21 @@ fun AvatarScreen(vm: ChatViewModel) {
         }
     }
 
-    // Entrada por voz con RemoteInput, el patrón estándar en Wear OS.
+    var isListeningVoice by remember { mutableStateOf(false) }
+
+    // Launcher de reserva por Activity si el SpeechRecognizer directo falla
     val voiceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isListeningVoice = false
         Log.d("WallyWatch", "voiceLauncher result code=${result.resultCode}, data=${result.data}")
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val resultsBundle = RemoteInput.getResultsFromIntent(result.data)
-            Log.d("WallyWatch", "resultsBundle=$resultsBundle")
-            val text = resultsBundle?.getCharSequence(VOICE_KEY)?.toString()
+            val speechResults = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            val directText = speechResults?.firstOrNull()
+            val remoteText = RemoteInput.getResultsFromIntent(result.data)
+                ?.getCharSequence(VOICE_KEY)?.toString()
+
+            val text = directText ?: remoteText
             Log.d("WallyWatch", "voiceLauncher extracted text='$text'")
             if (!text.isNullOrBlank()) {
                 stopSpeaking()
@@ -151,17 +164,157 @@ fun AvatarScreen(vm: ChatViewModel) {
         }
     }
 
+    fun launchFallbackVoiceIntent() {
+        val directSpeechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Escuchando tu pregunta para Wally…")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
+        }
+        try {
+            voiceLauncher.launch(directSpeechIntent)
+        } catch (e: Exception) {
+            Log.w("WallyWatch", "Direct ACTION_RECOGNIZE_SPEECH failed, using RemoteInput fallback", e)
+            val remoteIntent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+            val remoteInputs = listOf(
+                RemoteInput.Builder(VOICE_KEY).setLabel("Habla con Wally").build()
+            )
+            RemoteInputIntentHelper.putRemoteInputsExtra(remoteIntent, remoteInputs)
+            remoteIntent.putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            voiceLauncher.launch(remoteIntent)
+        }
+    }
+
+    fun startDirectSpeechRecognizer() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            Log.w("WallyWatch", "RECORD_AUDIO no concedido aún, usando fallback intent")
+            launchFallbackVoiceIntent()
+            return
+        }
+
+        val recognizer = runCatching {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            } else null
+        }.getOrNull()
+
+        if (recognizer == null) {
+            launchFallbackVoiceIntent()
+            return
+        }
+
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                Log.d("WallyWatch", "SpeechRecognizer: listo y escuchando...")
+                isListeningVoice = true
+            }
+
+            override fun onBeginningOfSpeech() {
+                Log.d("WallyWatch", "SpeechRecognizer: habla detectada")
+                isListeningVoice = true
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+
+            override fun onEndOfSpeech() {
+                Log.d("WallyWatch", "SpeechRecognizer: fin de habla, procesando envío automático...")
+                isListeningVoice = false
+            }
+
+            override fun onError(error: Int) {
+                Log.w("WallyWatch", "SpeechRecognizer error code: $error")
+                isListeningVoice = false
+                runCatching { recognizer.destroy() }
+                if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    launchFallbackVoiceIntent()
+                }
+            }
+
+            override fun onResults(results: Bundle?) {
+                isListeningVoice = false
+                runCatching { recognizer.destroy() }
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val text = matches?.firstOrNull()
+                Log.d("WallyWatch", "SpeechRecognizer resultado final: '$text'")
+                if (!text.isNullOrBlank()) {
+                    stopSpeaking()
+                    vm.send(text) // <--- ENVÍO AUTOMÁTICO INMEDIATO
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
+        }
+
+        runCatching {
+            recognizer.startListening(intent)
+        }.onFailure { e ->
+            Log.e("WallyWatch", "speechRecognizer.startListening falló", e)
+            runCatching { recognizer.destroy() }
+            launchFallbackVoiceIntent()
+        }
+    }
+
     fun launchVoiceInput() {
-        val intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
-        val remoteInputs = listOf(
-            RemoteInput.Builder(VOICE_KEY).setLabel("Habla con Wally").build()
-        )
-        RemoteInputIntentHelper.putRemoteInputsExtra(intent, remoteInputs)
-        intent.putExtra(
-            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-        )
-        voiceLauncher.launch(intent)
+        stopSpeaking()
+        startDirectSpeechRecognizer()
+    }
+
+    var gestureDetectedNotice by remember { mutableStateOf(false) }
+
+    // Reaccionar al evento de doble pellizco del servicio de gestos
+    LaunchedEffect(Unit) {
+        GestureService.gestureEvents.collect {
+            gestureDetectedNotice = true
+            if (!typing && !showProcess) {
+                stopSpeaking()
+                launchVoiceInput()
+            }
+            delay(3_000)
+            gestureDetectedNotice = false
+        }
+    }
+
+    // Reaccionar al disparo recibido desde MainActivity (para activar micro)
+    val autoRecordTime by MainActivity.autoRecordTrigger.collectAsStateWithLifecycle()
+    LaunchedEffect(autoRecordTime) {
+        if (autoRecordTime > 0L) {
+            gestureDetectedNotice = true
+            if (!typing && !showProcess) {
+                stopSpeaking()
+                launchVoiceInput()
+            }
+            delay(3_000)
+            gestureDetectedNotice = false
+        }
+    }
+
+    // Reaccionar a envío automático capturado desde segundo plano
+    val autoSendText by MainActivity.autoSendTrigger.collectAsStateWithLifecycle()
+    LaunchedEffect(autoSendText) {
+        val text = autoSendText
+        if (!text.isNullOrBlank()) {
+            stopSpeaking()
+            vm.send(text)
+            MainActivity.autoSendTrigger.value = null
+        }
     }
 
     // Cuando llega mi respuesta, se reproduce: mi voz generada si trae
@@ -203,9 +356,11 @@ fun AvatarScreen(vm: ChatViewModel) {
         else -> null
     }
     val hint = when {
+        isListeningVoice -> "🎙️ Escuchando tu pregunta…"
+        gestureDetectedNotice -> "🤏 ¡Doble pellizco! Escuchando…"
         typing && stageFresh && stageLabel != null -> stageLabel
         typing -> "Wally está respondiendo…"
-        else -> "Toca dos veces para hablar"
+        else -> "Pellizca 2 veces para hablar"
     }
 
     Box(
