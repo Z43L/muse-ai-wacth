@@ -2,6 +2,7 @@ package com.wally.watchchat
 
 import android.app.Activity
 import android.app.RemoteInput
+import android.media.MediaPlayer
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,9 +37,11 @@ import android.util.Log
  * La app ES el avatar: Wally a pantalla completa para hablar por voz.
  *
  * - Tocas la pantalla y hablas (RemoteInput por voz).
- * - Tu mensaje va al buzón; cuando llega mi respuesta, el reloj la lee
- *   en voz alta (síntesis de voz del propio reloj).
- * - No es una llamada en vivo real: la latencia ronda los ~30 s por el buzón.
+ * - Tu mensaje va al buzón; cuando llega mi respuesta, el reloj reproduce
+ *   el audio que genero con mi voz (mp3 descargado del buzón). Si la
+ *   respuesta no trae audio, se lee con el TTS del reloj como reserva.
+ * - No es una llamada en vivo real: la latencia ronda los ~30-60 s por el
+ *   buzón (el audio se genera en el servidor en cada respuesta).
  */
 @Composable
 fun AvatarApp() {
@@ -54,7 +57,8 @@ fun AvatarScreen(vm: ChatViewModel) {
     val typing by vm.typing.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
 
-    // Síntesis de voz del reloj para leer mis respuestas.
+    // Síntesis de voz del reloj: solo como reserva si la respuesta
+    // no trae audio locutado por Wally.
     val tts = remember {
         lateinit var engine: TextToSpeech
         engine = TextToSpeech(context) { status ->
@@ -64,16 +68,43 @@ fun AvatarScreen(vm: ChatViewModel) {
         }
         engine
     }
+
+    // Reproductor para el audio que genera Wally (su voz de verdad).
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+
+    fun stopSpeaking() {
+        tts.stop()
+        player?.let {
+            runCatching { it.stop() }
+            it.release()
+        }
+        player = null
+    }
+
     DisposableEffect(Unit) {
         onDispose {
-            tts.stop()
+            stopSpeaking()
             tts.shutdown()
         }
     }
 
-    fun speak(text: String) {
-        tts.stop()
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "wally-reply")
+    fun speakReply(msg: ChatMessage) {
+        stopSpeaking()
+        val file = msg.audioFile
+        if (file != null && file.exists()) {
+            // Voz de Wally generada en el servidor.
+            Log.d("WallyWatch", "AvatarScreen: reproduciendo audio ${file.name}")
+            player = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                prepare()
+                setOnCompletionListener { stopSpeaking() }
+                start()
+            }
+        } else {
+            // Reserva: TTS del reloj.
+            Log.d("WallyWatch", "AvatarScreen: sin audio, usando TTS del reloj")
+            tts.speak(msg.text, TextToSpeech.QUEUE_FLUSH, null, "wally-reply")
+        }
     }
 
     // Entrada por voz con RemoteInput, el patrón estándar en Wear OS.
@@ -87,7 +118,7 @@ fun AvatarScreen(vm: ChatViewModel) {
             val text = resultsBundle?.getCharSequence(VOICE_KEY)?.toString()
             Log.d("WallyWatch", "voiceLauncher extracted text='$text'")
             if (!text.isNullOrBlank()) {
-                tts.stop()
+                stopSpeaking()
                 vm.send(text)
             }
         }
@@ -106,11 +137,12 @@ fun AvatarScreen(vm: ChatViewModel) {
         voiceLauncher.launch(intent)
     }
 
-    // Cuando llega mi respuesta, la lee en voz alta.
+    // Cuando llega mi respuesta, se reproduce: mi voz generada si trae
+    // audio, o el TTS del reloj como reserva.
     var wasTyping by remember { mutableStateOf(false) }
     LaunchedEffect(typing) {
         if (wasTyping && !typing) {
-            messages.lastOrNull { !it.isUser }?.text?.let { speak(it) }
+            messages.lastOrNull { !it.isUser }?.let { speakReply(it) }
         }
         wasTyping = typing
     }

@@ -10,7 +10,14 @@ Uso:
   mailbox.py inbox                         muestra la cola de pendientes (la usa el cron)
   mailbox.py send "texto"                  añade un mensaje a la cola (test / terminal)
   mailbox.py outbox <id> --text-file F     escribe la respuesta del agente
+      [--audio-file MP3]                   sube el audio y lo referencia en outbox.json
+  mailbox.py audio <reply_id> <mp3>        sube un mp3 a audio/<reply_id>.mp3
+  mailbox.py clean-audio --keep <reply_id> borra audios viejos excepto el indicado
   mailbox.py done <id>                     saca el mensaje <id> de la cola
+
+Formato de outbox.json:
+  {"reply_to": id, "ts": ..., "text": "...", "audio": "audio/<id>.mp3"}
+El campo "audio" es opcional; la app lo reproduce y si falta usa su TTS.
 """
 import argparse
 import base64
@@ -167,12 +174,83 @@ def cmd_outbox(args):
         text = (args.text or "").strip()
     if not text:
         raise SystemExit("respuesta vacía")
+    out = {"reply_to": args.reply_to, "ts": int(time.time()), "text": text}
+    if args.audio_file:
+        with open(args.audio_file, "rb") as f:
+            raw = f.read()
+        if not raw:
+            raise SystemExit("audio vacío")
+        audio_path = f"audio/{args.reply_to}.mp3"
+        put_blob(audio_path, raw, "buzon: audio de respuesta")
+        out["audio"] = audio_path
+        cmd_clean_audio(argparse.Namespace(keep=args.reply_to))
     put_file(
         "outbox.json",
-        {"reply_to": args.reply_to, "ts": int(time.time()), "text": text},
+        out,
         "buzon: respuesta del agente",
     )
     print("outbox ok ->", args.reply_to)
+
+
+def get_sha(path):
+    """Devuelve el sha del fichero o None si no existe (sin parsear contenido)."""
+    try:
+        _, data = api("GET", f"/repos/{REPO}/contents/{path}")
+        return data["sha"]
+    except SystemExit as e:
+        if "HTTP 404" in str(e):
+            return None
+        raise
+
+
+def put_blob(path, raw, message):
+    """Sube un fichero binario (mp3) al repo."""
+    sha = get_sha(path)
+    body = {
+        "message": message,
+        "content": base64.b64encode(raw).decode(),
+    }
+    if sha:
+        body["sha"] = sha
+    api("PUT", f"/repos/{REPO}/contents/{path}", body)
+
+
+def delete_file(path):
+    sha = get_sha(path)
+    if not sha:
+        return
+    api(
+        "DELETE",
+        f"/repos/{REPO}/contents/{path}",
+        {"message": "buzon: limpieza audio", "sha": sha},
+    )
+
+
+def cmd_audio(args):
+    with open(args.mp3, "rb") as f:
+        raw = f.read()
+    if not raw:
+        raise SystemExit("audio vacío")
+    audio_path = f"audio/{args.reply_id}.mp3"
+    put_blob(audio_path, raw, "buzon: audio de respuesta")
+    print("audio ok ->", audio_path)
+
+
+def cmd_clean_audio(args):
+    keep = f"audio/{args.keep}.mp3" if args.keep else None
+    try:
+        _, data = api("GET", f"/repos/{REPO}/contents/audio")
+    except SystemExit as e:
+        if "HTTP 404" in str(e):
+            return
+        raise
+    if isinstance(data, dict):  # es un fichero, no un directorio
+        return
+    for entry in data:
+        p = entry.get("path", "")
+        if p.endswith(".mp3") and p != keep:
+            delete_file(p)
+            print("borrado:", p)
 
 
 def cmd_done(args):
@@ -193,6 +271,12 @@ def main():
     o.add_argument("reply_to")
     o.add_argument("text", nargs="?")
     o.add_argument("--text-file")
+    o.add_argument("--audio-file")
+    a = sub.add_parser("audio")
+    a.add_argument("reply_id")
+    a.add_argument("mp3")
+    c = sub.add_parser("clean-audio")
+    c.add_argument("--keep", default=None)
     d = sub.add_parser("done")
     d.add_argument("id")
     args = p.parse_args()
@@ -201,6 +285,8 @@ def main():
         "inbox": cmd_inbox,
         "send": cmd_send,
         "outbox": cmd_outbox,
+        "audio": cmd_audio,
+        "clean-audio": cmd_clean_audio,
         "done": cmd_done,
     }[args.cmd](args)
 

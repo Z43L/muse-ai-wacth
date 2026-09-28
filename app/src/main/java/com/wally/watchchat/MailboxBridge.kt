@@ -10,6 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -18,14 +19,16 @@ import java.util.concurrent.TimeUnit
  * reloj y Wally.
  *
  * 1. Escribe tu mensaje en inbox.json con status "pending".
- * 2. Un cron del lado del servidor lo lee cada minuto, responde escribiendo
- *    en outbox.json y marca el inbox como "done".
- * 3. Este puente hace polling a outbox.json hasta ver la respuesta.
+ * 2. Un cron del lado del servidor lo lee cada 15 s, genera la respuesta
+ *    (texto + mp3 locutado con la voz de Wally), la escribe en outbox.json
+ *    (campo "audio": "audio/<id>.mp3") y marca el inbox como "done".
+ * 3. Este puente hace polling a outbox.json hasta ver la respuesta; si trae
+ *    audio, lo descarga a la caché y lo devuelve para reproducirlo.
  *
  * Necesita un token en [MailboxConfig] (fine-grained PAT con permiso
  * Contents: lectura y escritura, SOLO en el repo del buzón).
  */
-class MailboxBridge : AssistantBridge {
+class MailboxBridge(private val cacheDir: File) : AssistantBridge {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -34,7 +37,7 @@ class MailboxBridge : AssistantBridge {
 
     private val jsonMedia = "application/json".toMediaType()
 
-    override suspend fun getReply(prompt: String, history: List<ChatMessage>): String =
+    override suspend fun getReply(prompt: String, history: List<ChatMessage>): Reply =
         withContext(Dispatchers.IO) {
             val id = UUID.randomUUID().toString().replace("-", "").take(12)
             Log.d("WallyWatch", "MailboxBridge: sending prompt with id=$id ('$prompt')")
@@ -51,11 +54,11 @@ class MailboxBridge : AssistantBridge {
                 Log.d("WallyWatch", "MailboxBridge: putJson inbox.json SUCCESS for id=$id")
             } catch (e: Exception) {
                 Log.e("WallyWatch", "MailboxBridge: putJson FAILED for id=$id", e)
-                return@withContext "No pude escribir en el buzón: ${e.message}"
+                return@withContext Reply("No pude escribir en el buzón: ${e.message}")
             }
 
             // Reacciona en cuanto cambia el outbox (polling corto con cache buster).
-            val deadline = System.currentTimeMillis() + 120_000
+            val deadline = System.currentTimeMillis() + 180_000
             var lastError: String? = null
             while (System.currentTimeMillis() < deadline) {
                 try {
@@ -67,21 +70,49 @@ class MailboxBridge : AssistantBridge {
                         if (replyTo == id) {
                             val text = out.optString("text", "")
                             Log.d("WallyWatch", "MailboxBridge: match found! text='$text'")
-                            return@withContext text.ifEmpty { "(respuesta vacía)" }
+                            val audioFile = downloadAudio(out.optString("audio", ""), id)
+                            return@withContext Reply(
+                                text.ifEmpty { "(respuesta vacía)" },
+                                audioFile
+                            )
                         }
                     }
                 } catch (e: Exception) {
                     Log.e("WallyWatch", "MailboxBridge: polling outbox.json exception", e)
                     lastError = e.message
                     if (e.message?.contains("HTTP 4") == true) {
-                        return@withContext "Error de GitHub: ${e.message}"
+                        return@withContext Reply("Error de GitHub: ${e.message}")
                     }
                 }
                 delay(2_500)
             }
-            "Wally no respondió a tiempo (~2 min)." +
-                (if (lastError != null) " Último error: $lastError" else "")
+            Reply(
+                "Wally no respondió a tiempo (~3 min)." +
+                    (if (lastError != null) " Último error: $lastError" else "")
+            )
         }
+
+    /**
+     * Descarga el mp3 de la respuesta (campo "audio" del outbox, p. ej.
+     * "audio/<id>.mp3") a la caché. Devuelve el fichero o null si falla
+     * (entonces se usa el TTS del reloj como antes).
+     */
+    private fun downloadAudio(audioPath: String, id: String): File? {
+        if (audioPath.isBlank()) return null
+        return try {
+            val meta = apiGet(audioPath) ?: return null
+            val content = meta.optString("content", "").replace("\\s".toRegex(), "")
+            if (content.isEmpty()) return null
+            val bytes = Base64.decode(content, Base64.DEFAULT)
+            val file = File(cacheDir, "wally_reply_$id.mp3")
+            file.writeBytes(bytes)
+            Log.d("WallyWatch", "MailboxBridge: audio descargado (${bytes.size} B) -> ${file.absolutePath}")
+            file
+        } catch (e: Exception) {
+            Log.e("WallyWatch", "MailboxBridge: no se pudo descargar el audio", e)
+            null
+        }
+    }
 
     /** GET del fichero en el repo; devuelve el JSON de la API (content+sha) o null. */
     private fun apiGet(path: String): JSONObject? {

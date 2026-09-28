@@ -20,16 +20,26 @@ import java.util.UUID
  *    Data Layer (MessageClient) y espera su respuesta. La app del móvil NO
  *    está incluida en este prototipo: habría que escribirla aparte.
  */
+/**
+ * Respuesta del asistente: texto + opcionalmente un mp3 con la respuesta
+ * locutada con la voz del asistente (se reproduce en el reloj en lugar
+ * del TTS del sistema).
+ */
+data class Reply(
+    val text: String,
+    val audioFile: java.io.File? = null
+)
+
 interface AssistantBridge {
-    suspend fun getReply(prompt: String, history: List<ChatMessage>): String
+    suspend fun getReply(prompt: String, history: List<ChatMessage>): Reply
 }
 
 /** Respuestas simuladas: solo para ver la UI funcionando en el reloj. */
 class SimulatedBridge : AssistantBridge {
-    override suspend fun getReply(prompt: String, history: List<ChatMessage>): String {
+    override suspend fun getReply(prompt: String, history: List<ChatMessage>): Reply {
         // Pausa para que se vea el indicador de "escribiendo..."
         kotlinx.coroutines.delay(900)
-        return when {
+        val text = when {
             prompt.contains("hola", ignoreCase = true) ->
                 "Hola. Soy el prototipo: la UI funciona, pero aún no hablo con el Wally de verdad."
             prompt.contains("hora", ignoreCase = true) -> {
@@ -39,6 +49,7 @@ class SimulatedBridge : AssistantBridge {
             }
             else -> "Recibido: \"$prompt\". (Respuesta simulada: aquí iría el puente real.)"
         }
+        return Reply(text)
     }
 }
 
@@ -52,13 +63,13 @@ class SimulatedBridge : AssistantBridge {
  */
 class DataLayerBridge(private val context: Context) : AssistantBridge {
 
-    override suspend fun getReply(prompt: String, history: List<ChatMessage>): String =
+    override suspend fun getReply(prompt: String, history: List<ChatMessage>): Reply =
         withContext(Dispatchers.IO) {
             val node = runCatching {
                 withTimeout(5_000) {
                     Wearable.getNodeClient(context).connectedNodes.await().firstOrNull()
                 }
-            }.getOrNull() ?: return@withContext "No hay móvil conectado al reloj."
+            }.getOrNull() ?: return@withContext Reply("No hay móvil conectado al reloj.")
 
             val requestId = UUID.randomUUID().toString()
             val deferred = ReplyBus.register(requestId)
@@ -69,11 +80,13 @@ class DataLayerBridge(private val context: Context) : AssistantBridge {
                     .await()
             }.onFailure {
                 ReplyBus.complete(requestId, "")
-                return@withContext "No se pudo enviar al móvil: ${it.message}"
+                return@withContext Reply("No se pudo enviar al móvil: ${it.message}")
             }
 
-            withTimeoutOrNull(25_000) { deferred.await() }
-                ?: "El móvil no respondió a tiempo."
+            Reply(
+                withTimeoutOrNull(25_000) { deferred.await() }
+                    ?: "El móvil no respondió a tiempo."
+            )
         }
 
     companion object {

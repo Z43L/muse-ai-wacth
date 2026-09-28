@@ -5,7 +5,8 @@ La app **ES el asistente**: su avatar animado ocupa toda la pantalla, tocas para
 hablar y el reloj te lee la respuesta en voz alta.
 
 > **Lo que es:** un prototipo funcional. Hablas desde un Pixel Watch 3 y un
-> agente de IA te responde con voz, con una latencia típica de 15–30 segundos.
+> agente de IA te responde **con su propia voz** (audio generado en el
+> servidor, no el TTS del reloj), con una latencia típica de 30–60 segundos.
 >
 > **Lo que no es:** una llamada en vivo en tiempo real ni una app oficial.
 > No hay SDK público para llevar un asistente al reloj, así que el canal de
@@ -26,13 +27,15 @@ hablar y el reloj te lee la respuesta en voz alta.
 
 1. Hablas al reloj → la app escribe tu mensaje en `inbox.json` del repo buzón.
 2. Una tarea programada del lado del agente (cada 15–60 s) lee el mensaje,
-   genera la respuesta y la escribe en `outbox.json`, marcando el mensaje como
-   atendido.
+   genera la respuesta **en texto y en audio** (mp3 locutado con la voz del
+   asistente), sube el mp3 a `audio/<id>.mp3`, escribe todo en `outbox.json`
+   y saca el mensaje de la cola.
 3. La app vigila `outbox.json` cada 3 segundos; cuando aparece la respuesta,
-   la muestra en el chat y la lee en voz alta con el TTS del reloj.
+   descarga el mp3 y lo reproduce. Si la respuesta no trae audio, usa el TTS
+   del reloj como reserva.
 
-El buzón es un único repo privado con dos ficheros JSON; no hace falta ningún
-servidor.
+El buzón es un único repo privado con dos ficheros JSON (más la carpeta
+`audio/` con el mp3 de la última respuesta); no hace falta ningún servidor.
 
 ---
 
@@ -120,9 +123,11 @@ object MailboxConfig {
   la animación de "trabajando".
 - `MailboxBridge`: envía tu mensaje a `inbox.json` y hace polling a
   `outbox.json` cada 3 segundos hasta que llega la respuesta dirigida a tu
-  mensaje (`reply_to == id`).
-- La respuesta se muestra en el chat y se lee en voz alta con el TTS del
-  reloj (español).
+  mensaje (`reply_to == id`). Si la respuesta trae `audio`, descarga el mp3
+  a la caché del reloj.
+- La respuesta se muestra en el chat y **se reproduce el mp3 con la voz del
+  asistente** (`MediaPlayer`); si no hay audio, se lee con el TTS del reloj
+  como reserva.
 - `ChatListenerService` + `ChatViewModel`: plumbing del chat.
 
 El icono de la app (`res/mipmap-*/ic_launcher.png`) es la imagen del avatar:
@@ -187,12 +192,33 @@ python3 mailbox/mailbox.py done <id>          # marcar como atendido sin respond
 La tarea programada debe, cada 15–60 segundos:
 
 1. Leer el primer mensaje pendiente de `inbox.json`.
-2. Generar la respuesta (el agente).
-3. Escribirla en `outbox.json` con `reply_to` = id del mensaje.
-4. Sacar el mensaje de la cola (`done`).
+2. Generar la respuesta (el agente), **corta**: 1–2 frases como máximo, para
+   que el audio se genere rápido.
+3. Locutar la respuesta con la voz del asistente y guardarla como mp3.
+4. Subir el mp3 y escribir `outbox.json` con `reply_to` = id del mensaje y
+   `audio` = ruta del mp3:
+   ```json
+   {
+     "reply_to": "abc123",
+     "ts": 1790560314,
+     "text": "¡Hola! ¿Qué tal?",
+     "audio": "audio/abc123.mp3"
+   }
+   ```
+   Con el `mailbox.py` de este repo es un solo comando:
+   ```bash
+   python3 mailbox/mailbox.py outbox <id> --text-file respuesta.txt --audio-file respuesta.mp3
+   ```
+   (sube el mp3 a `audio/<id>.mp3`, lo referencia en `outbox.json` y borra
+   los audios de respuestas anteriores).
+5. Sacar el mensaje de la cola (`done`).
 
 Un mensaje por ejecución es suficiente; si hay varios pendientes, las
 siguientes ejecuciones los atienden en orden.
+
+> Nota sobre la latencia: generar el audio añade ~10–30 s por respuesta
+> (según lo larga que sea). Por eso las respuestas deben ser cortas: menos
+> texto = audio más rápido = el reloj responde antes.
 
 ---
 
@@ -202,7 +228,8 @@ siguientes ejecuciones los atienden en orden.
 |---|---|
 | Error de GitHub al hablar | Token mal copiado, caducado o sin permiso Contents: write en el repo |
 | El reloj no responde nunca | La tarea del agente no está corriendo, o el repo de `MailboxConfig` no es el mismo que vigila el agente |
-| Responde pero tarda mucho | Normal: la latencia la marca el intervalo del cron del agente (15–60 s) |
+| Responde pero tarda mucho | Normal: la latencia la marcan el intervalo del cron del agente (15–60 s) más la generación del audio (~10–30 s) |
+| Responde con voz robótica | La respuesta no traía audio (falló la generación o la subida): está usando el TTS del reloj como reserva; revisa el log del agente |
 | Dos mensajes seguidos, solo responde uno | El buzón es una cola: el segundo se atiende en la siguiente ejecución del cron |
 
 ---

@@ -18,7 +18,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     //   SimulatedBridge()
     // (y la vía Data Layer sigue disponible en DataLayerBridge para una
     // futura app companion en el móvil).
-    private val bridge: AssistantBridge = MailboxBridge()
+    private val bridge: AssistantBridge = MailboxBridge(app.cacheDir)
 
     private val idGen = AtomicLong(0)
 
@@ -51,15 +51,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 bridge.getReply(text, history)
             } catch (e: Exception) {
                 Log.e("WallyWatch", "ChatViewModel: bridge exception", e)
-                "Error del puente: ${e.message}"
+                Reply("Error del puente: ${e.message}")
             }
-            Log.d("WallyWatch", "ChatViewModel: bridge reply='$reply'")
-            addMessage(reply, isUser = false)
+            Log.d("WallyWatch", "ChatViewModel: bridge reply='${reply.text}' audio=${reply.audioFile?.name}")
+            addMessage(reply.text, isUser = false, audioFile = reply.audioFile)
             _typing.value = false
         }
     }
 
-    private fun addMessage(text: String, isUser: Boolean) {
-        _messages.update { it + ChatMessage(idGen.incrementAndGet(), text, isUser) }
+    private fun addMessage(text: String, isUser: Boolean, audioFile: java.io.File? = null) {
+        _messages.update { it + ChatMessage(idGen.incrementAndGet(), text, isUser, audioFile = audioFile) }
     }
 }
